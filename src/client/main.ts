@@ -34,12 +34,14 @@ function resetTrailCanvas(): void {
 const dirs = new Map<string, Dir>(); // confirmed heading, derived from server ticks
 let predictedDir: Dir | null = null; // own turn rendered before the server confirms it
 
-// Smoothed render clock: heads are drawn at a position along the trail indexed
-// by `renderTick`, which advances on the local clock and is only *nudged*
-// toward the server's tick count — so network jitter never causes visible pops.
+// Smoothed server-tick timeline: `tickClock` is an EMA estimate of when the
+// latest tick "should" have arrived, so the fractional tick position derived
+// from it is continuous — arrival jitter never reaches the renderer. Our own
+// cycle renders at zero delay (predicted); remote cycles render ~1 tick
+// behind, staying on pure interpolation so corners never pop.
 let ticksSeen = 0;
-let renderTick = 0;
-let lastFrameAt = performance.now();
+let tickClock = 0;
+const REMOTE_DELAY = 0.9; // in ticks
 let hudNextAt = 0;
 
 function connect(): void {
@@ -72,7 +74,7 @@ function handle(msg: ServerMsg): void {
       dirs.clear();
       predictedDir = null;
       ticksSeen = 0;
-      renderTick = 0;
+      tickClock = 0;
       resetTrailCanvas();
       for (const p of msg.players) {
         players.set(p.id, p);
@@ -80,8 +82,12 @@ function handle(msg: ServerMsg): void {
         dirs.set(p.id, p.dir);
       }
       break;
-    case 'tick':
+    case 'tick': {
       ticksSeen += 1;
+      const now = performance.now();
+      const expected = tickClock + TICK_MS;
+      if (tickClock === 0 || Math.abs(now - expected) > 250) tickClock = now; // resync after a stall
+      else tickClock = expected + (now - expected) * 0.1; // absorb jitter slowly
       for (const h of msg.heads) {
         const trail = trails.get(h.id);
         if (!trail) continue;
@@ -107,6 +113,7 @@ function handle(msg: ServerMsg): void {
         }
       }
       break;
+    }
     case 'phase':
       phase = msg.phase;
       phaseEndsAt = msg.phaseEndsAt;
@@ -168,15 +175,11 @@ window.addEventListener('resize', resize);
 resize();
 
 function draw(frameNow: number): void {
-  const dt = Math.min(100, frameNow - lastFrameAt);
-  lastFrameAt = frameNow;
-  if (phase === 'playing') {
-    renderTick += dt / TICK_MS; // advance on the steady local clock
-    renderTick += (ticksSeen - renderTick) * 0.08; // gently chase the server
-    renderTick = Math.max(ticksSeen - 2, Math.min(ticksSeen + 1, renderTick));
-  } else {
-    renderTick = ticksSeen;
-  }
+  // Continuous fractional server-tick estimate; advances with real time and
+  // only drifts by the (slow) EMA correction, so motion speed stays constant.
+  const tickFloat = phase === 'playing' && tickClock !== 0
+    ? ticksSeen + Math.min(1, (frameNow - tickClock) / TICK_MS)
+    : ticksSeen;
 
   const cell = canvas.width / GRID_W;
   ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -210,7 +213,7 @@ function draw(frameNow: number): void {
   for (const [id, trail] of trails) {
     const p = players.get(id);
     if (p?.alive && trail.length > 0) {
-      const [hx, hy] = headPos(id, trail);
+      const [hx, hy] = headPos(id, trail, tickFloat);
       ctx.fillStyle = p.color;
       ctx.shadowColor = p.color;
       ctx.shadowBlur = 14;
@@ -228,12 +231,14 @@ function draw(frameNow: number): void {
   requestAnimationFrame(draw);
 }
 
-// Continuous head position along the trail path at `renderTick`; positions
-// past the newest confirmed cell extrapolate along the current (or, for our
-// own cycle, optimistically predicted) heading.
-function headPos(id: string, trail: [number, number][]): [number, number] {
+// Continuous head position along the trail path. Our own cycle renders at the
+// live tick estimate (extrapolating along the predicted heading); remote
+// cycles render REMOTE_DELAY ticks behind, interpolating between confirmed
+// cells so their corners never pop.
+function headPos(id: string, trail: [number, number][], tickFloat: number): [number, number] {
   const last = trail.length - 1;
-  const idxF = Math.max(0, last + (renderTick - ticksSeen));
+  const delay = id === myId ? 0 : REMOTE_DELAY;
+  const idxF = Math.min(last + 1, Math.max(0, last + (tickFloat - delay - ticksSeen)));
   const i0 = Math.min(Math.floor(idxF), last);
   const f = idxF - i0;
   const c0 = trail[i0];
