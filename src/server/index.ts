@@ -19,7 +19,8 @@ game.start();
 
 const VALID_DIRS = new Set(['up', 'down', 'left', 'right']);
 
-wss.on('connection', (ws: WebSocket) => {
+wss.on('connection', (ws: WebSocket, req) => {
+  req.socket.setNoDelay(true); // don't let Nagle batch tiny turn/tick frames
   const id = crypto.randomUUID().slice(0, 8);
   let joined = false;
 

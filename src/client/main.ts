@@ -1,5 +1,5 @@
 import {
-  GRID_W, GRID_H, Dir, Phase, PlayerInfo, ServerMsg, ClientMsg,
+  GRID_W, GRID_H, TICK_MS, DELTA, OPPOSITE, Dir, Phase, PlayerInfo, ServerMsg, ClientMsg,
 } from '../shared/protocol';
 
 const canvas = document.getElementById('game') as HTMLCanvasElement;
@@ -18,6 +18,9 @@ let phaseEndsAt: number | null = null;
 let winner: PlayerInfo | null = null;
 const players = new Map<string, PlayerInfo>();
 const trails = new Map<string, [number, number][]>();
+const dirs = new Map<string, Dir>(); // confirmed heading, derived from server ticks
+let lastTickAt = performance.now();
+let predictedDir: Dir | null = null; // own turn rendered before the server confirms it
 
 function connect(): void {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
@@ -46,16 +49,40 @@ function handle(msg: ServerMsg): void {
       winner = null;
       players.clear();
       trails.clear();
+      dirs.clear();
+      predictedDir = null;
+      lastTickAt = performance.now();
       for (const p of msg.players) {
         players.set(p.id, p);
         trails.set(p.id, [...p.trail]);
+        dirs.set(p.id, p.dir);
       }
       break;
     case 'tick':
-      for (const h of msg.heads) trails.get(h.id)?.push([h.x, h.y]);
+      lastTickAt = performance.now();
+      for (const h of msg.heads) {
+        const trail = trails.get(h.id);
+        if (!trail) continue;
+        const prev = trail[trail.length - 1];
+        if (prev) {
+          if (h.x > prev[0]) dirs.set(h.id, 'right');
+          else if (h.x < prev[0]) dirs.set(h.id, 'left');
+          else if (h.y > prev[1]) dirs.set(h.id, 'down');
+          else if (h.y < prev[1]) dirs.set(h.id, 'up');
+        }
+        trail.push([h.x, h.y]);
+      }
       for (const id of msg.deaths) {
         const p = players.get(id);
         if (p) p.alive = false;
+      }
+      // Drop the prediction once the server confirms it — or has clearly
+      // rejected it (a 180 relative to the confirmed heading).
+      if (predictedDir) {
+        const confirmed = dirs.get(myId);
+        if (confirmed && (confirmed === predictedDir || predictedDir === OPPOSITE[confirmed])) {
+          predictedDir = null;
+        }
       }
       break;
     case 'phase':
@@ -97,6 +124,12 @@ window.addEventListener('keydown', (e) => {
   if (dir) {
     e.preventDefault();
     send({ t: 'turn', dir });
+    // Optimistically show the turn right away; the server confirms next tick.
+    const me = players.get(myId);
+    const heading = predictedDir ?? dirs.get(myId);
+    if (me?.alive && phase === 'playing' && heading && dir !== heading && dir !== OPPOSITE[heading]) {
+      predictedDir = dir;
+    }
   }
 });
 
@@ -124,6 +157,12 @@ function draw(): void {
     ctx.beginPath(); ctx.moveTo(0, y * cell); ctx.lineTo(canvas.width, y * cell); ctx.stroke();
   }
 
+  // Fraction of the current tick elapsed — heads glide between cells instead
+  // of snapping at 15 Hz.
+  const progress = phase === 'playing'
+    ? Math.min(1, (performance.now() - lastTickAt) / TICK_MS)
+    : 0;
+
   for (const [id, trail] of trails) {
     const p = players.get(id);
     const color = p?.color ?? '#446677';
@@ -133,9 +172,12 @@ function draw(): void {
     for (const [x, y] of trail) ctx.fillRect(x * cell, y * cell, cell, cell);
     const head = trail[trail.length - 1];
     if (head && p?.alive) {
+      const dir = (id === myId && predictedDir) ? predictedDir : dirs.get(id);
+      const [dx, dy] = dir ? DELTA[dir] : [0, 0];
+      ctx.fillRect((head[0] + dx * progress) * cell, (head[1] + dy * progress) * cell, cell, cell);
       ctx.shadowBlur = 14;
       ctx.fillStyle = '#ffffff';
-      ctx.fillRect(head[0] * cell, head[1] * cell, cell, cell);
+      ctx.fillRect((head[0] + dx * progress) * cell, (head[1] + dy * progress) * cell, cell, cell);
     }
     ctx.shadowBlur = 0;
   }
