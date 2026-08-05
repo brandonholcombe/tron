@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TRON — kodloki grid</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; background: #050a0f; color: #cfefff; font-family: "Menlo", "Consolas", monospace; overflow: hidden; }
+  #wrap { position: relative; height: 100%; display: flex; align-items: center; justify-content: center; }
+  canvas { background: #060d14; box-shadow: 0 0 40px rgba(0, 229, 255, 0.15); }
+  #hud { position: absolute; top: 12px; left: 14px; font-size: 13px; line-height: 1.6; text-shadow: 0 0 6px currentColor; pointer-events: none; }
+  #banner { position: absolute; top: 40%; width: 100%; text-align: center; font-size: 28px; letter-spacing: 3px; text-shadow: 0 0 12px currentColor; pointer-events: none; }
+  #join { position: absolute; inset: 0; display: flex; flex-direction: column; gap: 14px; align-items: center; justify-content: center; background: rgba(5, 10, 15, 0.92); }
+  #join h1 { color: #00e5ff; letter-spacing: 8px; text-shadow: 0 0 18px #00e5ff; font-size: 42px; }
+  #join input { background: #0a1620; border: 1px solid #00e5ff; color: #cfefff; padding: 10px 14px; font: inherit; font-size: 16px; outline: none; text-align: center; }
+  #join button { background: #00e5ff; border: none; color: #050a0f; padding: 10px 26px; font: inherit; font-size: 16px; letter-spacing: 2px; cursor: pointer; }
+  #join button:hover { box-shadow: 0 0 16px #00e5ff; }
+  #hint { position: absolute; bottom: 10px; width: 100%; text-align: center; font-size: 11px; color: #3d6b80; pointer-events: none; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="game"></canvas>
+  <div id="hud"></div>
+  <div id="banner"></div>
+  <div id="join">
+    <h1>TRON</h1>
+    <input id="name" maxlength="16" placeholder="your name" autofocus>
+    <button id="go">ENTER THE GRID</button>
+  </div>
+  <div id="hint">arrows / WASD to turn</div>
+</div>
+<script src="main.js"></script>
+</body>
+</html>

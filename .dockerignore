@@ -1,0 +1,7 @@
+node_modules
+dist
+.git
+K8s
+argocd
+scripts
+*.md

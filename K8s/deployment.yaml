@@ -1,0 +1,57 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tron-server
+  namespace: tron
+  labels:
+    app: tron-server
+spec:
+  replicas: 1
+  # In-memory single-arena game state: never run two arenas at once.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: tron-server
+  template:
+    metadata:
+      labels:
+        app: tron-server
+    spec:
+      securityContext:
+        fsGroup: 1000
+      containers:
+        - name: tron-server
+          image: bholcombe/tron-server:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 3000
+              name: http
+          env:
+            - name: PORT
+              value: "3000"
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 3000
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          resources:
+            requests:
+              memory: 128Mi
+              cpu: 50m
+            limits:
+              memory: 256Mi
+              cpu: 250m
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
