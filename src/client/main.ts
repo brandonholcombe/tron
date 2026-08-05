@@ -92,6 +92,7 @@ const KEYS: Record<string, Dir> = {
   W: 'up', S: 'down', A: 'left', D: 'right',
 };
 window.addEventListener('keydown', (e) => {
+  if (!ws || e.target instanceof HTMLInputElement) return; // typing name, not steering
   const dir = KEYS[e.key];
   if (dir) {
     e.preventDefault();
