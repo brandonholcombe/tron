@@ -18,9 +18,29 @@ let phaseEndsAt: number | null = null;
 let winner: PlayerInfo | null = null;
 const players = new Map<string, PlayerInfo>();
 const trails = new Map<string, [number, number][]>();
+
+// Trails are drawn incrementally onto an offscreen canvas and blitted each
+// frame — redrawing thousands of glowing cells per frame is what janks Canvas.
+const trailCanvas = document.createElement('canvas');
+const trailCtx = trailCanvas.getContext('2d')!;
+const trailDrawn = new Map<string, number>(); // cells already painted per player
+
+function resetTrailCanvas(): void {
+  trailCanvas.width = canvas.width;
+  trailCanvas.height = canvas.height;
+  trailCtx.clearRect(0, 0, trailCanvas.width, trailCanvas.height);
+  trailDrawn.clear();
+}
 const dirs = new Map<string, Dir>(); // confirmed heading, derived from server ticks
-let lastTickAt = performance.now();
 let predictedDir: Dir | null = null; // own turn rendered before the server confirms it
+
+// Smoothed render clock: heads are drawn at a position along the trail indexed
+// by `renderTick`, which advances on the local clock and is only *nudged*
+// toward the server's tick count — so network jitter never causes visible pops.
+let ticksSeen = 0;
+let renderTick = 0;
+let lastFrameAt = performance.now();
+let hudNextAt = 0;
 
 function connect(): void {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
@@ -51,7 +71,9 @@ function handle(msg: ServerMsg): void {
       trails.clear();
       dirs.clear();
       predictedDir = null;
-      lastTickAt = performance.now();
+      ticksSeen = 0;
+      renderTick = 0;
+      resetTrailCanvas();
       for (const p of msg.players) {
         players.set(p.id, p);
         trails.set(p.id, [...p.trail]);
@@ -59,7 +81,7 @@ function handle(msg: ServerMsg): void {
       }
       break;
     case 'tick':
-      lastTickAt = performance.now();
+      ticksSeen += 1;
       for (const h of msg.heads) {
         const trail = trails.get(h.id);
         if (!trail) continue;
@@ -140,11 +162,22 @@ function resize(): void {
   )));
   canvas.width = GRID_W * cell;
   canvas.height = GRID_H * cell;
+  resetTrailCanvas();
 }
 window.addEventListener('resize', resize);
 resize();
 
-function draw(): void {
+function draw(frameNow: number): void {
+  const dt = Math.min(100, frameNow - lastFrameAt);
+  lastFrameAt = frameNow;
+  if (phase === 'playing') {
+    renderTick += dt / TICK_MS; // advance on the steady local clock
+    renderTick += (ticksSeen - renderTick) * 0.08; // gently chase the server
+    renderTick = Math.max(ticksSeen - 2, Math.min(ticksSeen + 1, renderTick));
+  } else {
+    renderTick = ticksSeen;
+  }
+
   const cell = canvas.width / GRID_W;
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 
@@ -157,33 +190,62 @@ function draw(): void {
     ctx.beginPath(); ctx.moveTo(0, y * cell); ctx.lineTo(canvas.width, y * cell); ctx.stroke();
   }
 
-  // Fraction of the current tick elapsed — heads glide between cells instead
-  // of snapping at 15 Hz.
-  const progress = phase === 'playing'
-    ? Math.min(1, (performance.now() - lastTickAt) / TICK_MS)
-    : 0;
+  // Paint only newly-arrived trail cells onto the offscreen layer.
+  for (const [id, trail] of trails) {
+    let done = trailDrawn.get(id) ?? 0;
+    if (done >= trail.length) continue;
+    const color = players.get(id)?.color ?? '#446677';
+    trailCtx.fillStyle = color;
+    trailCtx.shadowColor = color;
+    trailCtx.shadowBlur = 6;
+    for (; done < trail.length; done++) {
+      const [x, y] = trail[done];
+      trailCtx.fillRect(x * cell, y * cell, cell, cell);
+    }
+    trailCtx.shadowBlur = 0;
+    trailDrawn.set(id, done);
+  }
+  ctx.drawImage(trailCanvas, 0, 0);
 
   for (const [id, trail] of trails) {
     const p = players.get(id);
-    const color = p?.color ?? '#446677';
-    ctx.fillStyle = color;
-    ctx.shadowColor = color;
-    ctx.shadowBlur = 6;
-    for (const [x, y] of trail) ctx.fillRect(x * cell, y * cell, cell, cell);
-    const head = trail[trail.length - 1];
-    if (head && p?.alive) {
-      const dir = (id === myId && predictedDir) ? predictedDir : dirs.get(id);
-      const [dx, dy] = dir ? DELTA[dir] : [0, 0];
-      ctx.fillRect((head[0] + dx * progress) * cell, (head[1] + dy * progress) * cell, cell, cell);
+    if (p?.alive && trail.length > 0) {
+      const [hx, hy] = headPos(id, trail);
+      ctx.fillStyle = p.color;
+      ctx.shadowColor = p.color;
       ctx.shadowBlur = 14;
+      ctx.fillRect(hx * cell, hy * cell, cell, cell);
       ctx.fillStyle = '#ffffff';
-      ctx.fillRect((head[0] + dx * progress) * cell, (head[1] + dy * progress) * cell, cell, cell);
+      ctx.fillRect(hx * cell, hy * cell, cell, cell);
+      ctx.shadowBlur = 0;
     }
-    ctx.shadowBlur = 0;
   }
 
-  updateHud();
+  if (frameNow >= hudNextAt) {
+    updateHud();
+    hudNextAt = frameNow + 150; // innerHTML churn every frame causes jank
+  }
   requestAnimationFrame(draw);
+}
+
+// Continuous head position along the trail path at `renderTick`; positions
+// past the newest confirmed cell extrapolate along the current (or, for our
+// own cycle, optimistically predicted) heading.
+function headPos(id: string, trail: [number, number][]): [number, number] {
+  const last = trail.length - 1;
+  const idxF = Math.max(0, last + (renderTick - ticksSeen));
+  const i0 = Math.min(Math.floor(idxF), last);
+  const f = idxF - i0;
+  const c0 = trail[i0];
+  let c1: [number, number];
+  if (i0 + 1 <= last) {
+    c1 = trail[i0 + 1];
+  } else {
+    const dir = (id === myId && predictedDir) ? predictedDir : dirs.get(id);
+    const [dx, dy] = dir ? DELTA[dir] : [0, 0];
+    c1 = [c0[0] + dx, c0[1] + dy];
+  }
+  return [c0[0] + (c1[0] - c0[0]) * f, c0[1] + (c1[1] - c0[1]) * f];
 }
 
 function updateHud(): void {
@@ -230,4 +292,4 @@ function join(): void {
   connect();
 }
 
-draw();
+requestAnimationFrame(draw);
