@@ -22,7 +22,7 @@ spec:
         fsGroup: 1000
       containers:
         - name: tron-server
-          image: bholcombe/tron-server:sha-b66f5a5
+          image: bholcombe/tron-server:sha-8197e49
           imagePullPolicy: Always
           ports:
             - containerPort: 3000
