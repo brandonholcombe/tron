@@ -43,6 +43,14 @@ let ticksSeen = 0;
 let tickClock = 0;
 const REMOTE_DELAY = 0.9; // in ticks
 let hudNextAt = 0;
+let lastFrameAt = performance.now();
+
+// Position-error smoothing: an optimistic turn (or server correction)
+// invalidates the already-drawn head path, which would teleport the head
+// diagonally. Instead we carry the visual offset and decay it fast, so the
+// head sweeps around the corner.
+const lastDrawn = new Map<string, [number, number]>();
+const smoothErr = new Map<string, [number, number]>();
 
 function connect(): void {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
@@ -75,6 +83,8 @@ function handle(msg: ServerMsg): void {
       predictedDir = null;
       ticksSeen = 0;
       tickClock = 0;
+      lastDrawn.clear();
+      smoothErr.clear();
       resetTrailCanvas();
       for (const p of msg.players) {
         players.set(p.id, p);
@@ -175,6 +185,8 @@ window.addEventListener('resize', resize);
 resize();
 
 function draw(frameNow: number): void {
+  const dt = Math.min(100, Math.max(1, frameNow - lastFrameAt));
+  lastFrameAt = frameNow;
   // Continuous fractional server-tick estimate; advances with real time and
   // only drifts by the (slow) EMA correction, so motion speed stays constant.
   const tickFloat = phase === 'playing' && tickClock !== 0
@@ -213,7 +225,27 @@ function draw(frameNow: number): void {
   for (const [id, trail] of trails) {
     const p = players.get(id);
     if (p?.alive && trail.length > 0) {
-      const [hx, hy] = headPos(id, trail, tickFloat);
+      const [px, py] = headPos(id, trail, tickFloat);
+      let [ex, ey] = smoothErr.get(id) ?? [0, 0];
+      const prev = lastDrawn.get(id);
+      if (prev) {
+        // If the target position jumped further than one frame of motion can
+        // explain, absorb the jump into the error offset instead of popping.
+        const jump = Math.hypot(px + ex - prev[0], py + ey - prev[1]);
+        const maxStep = (dt / TICK_MS) * 2 + 0.2;
+        if (jump > maxStep && jump < 3) {
+          ex = prev[0] - px;
+          ey = prev[1] - py;
+        } else if (jump >= 3) {
+          ex = 0; ey = 0; // too far gone (respawn etc.) — just snap
+        }
+      }
+      const decay = Math.exp(-dt / 60);
+      ex *= decay; ey *= decay;
+      const hx = px + ex;
+      const hy = py + ey;
+      smoothErr.set(id, [ex, ey]);
+      lastDrawn.set(id, [hx, hy]);
       ctx.fillStyle = p.color;
       ctx.shadowColor = p.color;
       ctx.shadowBlur = 14;
